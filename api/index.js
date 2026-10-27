@@ -1,5 +1,3 @@
-const axios = require('axios');
-
 module.exports = async (req, res) => {
   res.setHeader('Content-Type', 'application/json');
 
@@ -7,50 +5,62 @@ module.exports = async (req, res) => {
   if (req.method === 'GET') {
     return res.status(200).send(JSON.stringify({ 
       status: "success", 
-      message: "Payment Webhook is live!" 
+      message: "Endpoint is live!",
+      db_url_set: !!process.env.UPSTASH_REDIS_REST_URL,
+      db_token_set: !!process.env.UPSTASH_REDIS_REST_TOKEN,
+      bot_token_set: !!process.env.BOT_TOKEN
     }));
   }
 
   // 2. POST Request (FamGateway Webhook)
   if (req.method === 'POST') {
     try {
-      const data = req.body || {};
+      let body = '';
+      await new Promise((resolve) => {
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', () => { resolve(); });
+      });
+
+      let data = {};
+      try { data = JSON.parse(body); } catch (e) { data = {}; }
       
-      // FamGateway se aane wala data (Isko FamGateway docs ke hisaab se adjust karna pad sakta hai)
+      // Agar payment success ka signal hai
       if (data.status === "success" || data.event === "payment.success") {
         const userId = data.customer_id || data.user_id; 
         const amount = parseFloat(data.amount);
+        const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
+        const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+        const BOT_TOKEN = process.env.BOT_TOKEN;
 
-        if (userId && amount > 0) {
-          const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
-          const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
-          const BOT_TOKEN = process.env.BOT_TOKEN;
-
-          if (UPSTASH_URL && UPSTASH_TOKEN) {
-            // Step A: Current Balance check karo
-            const getRes = await axios.get(${UPSTASH_URL}/get/user:${userId}:balance, {
+        if (userId && amount > 0 && UPSTASH_URL && UPSTASH_TOKEN) {
+          try {
+            const getRes = await fetch(${UPSTASH_URL}/get/user:${userId}:balance, {
               headers: { Authorization: Bearer ${UPSTASH_TOKEN} }
             });
-            const currentBalance = parseFloat(getRes.data.result) || 0;
-
-            // Step B: Naya Balance save karo
+            const getData = await getRes.json();
+            const currentBalance = parseFloat(getData.result) || 0;
             const newBalance = currentBalance + amount;
-            await axios.get(${UPSTASH_URL}/set/user:${userId}:balance/${newBalance}, {
+
+            await fetch(${UPSTASH_URL}/set/user:${userId}:balance/${newBalance}, {
               headers: { Authorization: Bearer ${UPSTASH_TOKEN} }
             });
 
-            // Step C: Telegram par user ko message bhejo
             if (BOT_TOKEN) {
-              await axios.post(https://api.telegram.org/bot${BOT_TOKEN}/sendMessage, {
-                chat_id: userId,
-                text: ✅ Payment Successful!\n₹${amount} has been added to your balance.
+              await fetch(https://api.telegram.org/bot${BOT_TOKEN}/sendMessage, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  chat_id: userId,
+                  text: ✅ Payment Successful!\n₹${amount} has been added to your balance.
+                })
               });
             }
+          } catch (dbError) {
+            return res.status(500).send(JSON.stringify({ error: "Database Error: " + dbError.message }));
           }
         }
       }
-
-      return res.status(200).send(JSON.stringify({ status: "success" }));
+      return res.status(200).send(JSON.stringify({ status: "received" }));
     } catch (error) {
       return res.status(500).send(JSON.stringify({ error: error.message }));
     }
