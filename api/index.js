@@ -1,4 +1,19 @@
-export default async function handler(req, res) {
+const https = require('https');
+
+function makeRequest(url, options, postData = null) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => resolve(data));
+    });
+    req.on('error', reject);
+    if (postData) req.write(postData);
+    req.end();
+  });
+}
+
+module.exports = async (req, res) => {
   // 1. GET Request (Browser Test)
   if (req.method === 'GET') {
     return res.status(200).json({ 
@@ -12,42 +27,46 @@ export default async function handler(req, res) {
     try {
       const data = req.body;
       
-      // FamGateway se aane wala data (Example format - Ise FamGateway docs se match karna padega)
       if (data.status === "success" || data.event === "payment.success") {
         const userId = data.customer_id || data.user_id; 
         const amount = parseFloat(data.amount);
 
         if (userId && amount > 0) {
-          // --- UPSTASH DATABASE CODE ---
-          // Yahan hum direct Upstash ki REST API use karenge
           const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
           const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
           const BOT_TOKEN = process.env.BOT_TOKEN;
 
           if (UPSTASH_URL && UPSTASH_TOKEN) {
-            // Step A: Current Balance check karo
-            const getRes = await fetch(${UPSTASH_URL}/get/user:${userId}:balance, {
-              headers: { Authorization: Bearer ${UPSTASH_TOKEN} }
-            });
-            const getData = await getRes.json();
-            const currentBalance = parseFloat(getData.result) || 0;
+            // Fetch current balance
+            const getUrl = ${UPSTASH_URL}/get/user:${userId}:balance;
+            const getOptions = { headers: { Authorization: Bearer ${UPSTASH_TOKEN} } };
+            const getRes = await makeRequest(getUrl, getOptions);
+            let currentBalance = 0;
+            try {
+              const parsed = JSON.parse(getRes);
+              currentBalance = parseFloat(parsed.result) || 0;
+            } catch(e) {}
 
-            // Step B: Naya Balance save karo
+            // Set new balance
             const newBalance = currentBalance + amount;
-            await fetch(${UPSTASH_URL}/set/user:${userId}:balance/${newBalance}, {
-              headers: { Authorization: Bearer ${UPSTASH_TOKEN} }
-            });
+            const setUrl = ${UPSTASH_URL}/set/user:${userId}:balance/${newBalance};
+            await makeRequest(setUrl, getOptions);
 
-            // Step C: Telegram par user ko message bhejo
+            // Send Telegram message
             if (BOT_TOKEN) {
-              await fetch(https://api.telegram.org/bot${BOT_TOKEN}/sendMessage, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  chat_id: userId,
-                  text: ✅ Payment Successful!\n₹${amount} has been added to your balance.
-                })
+              const tgUrl = https://api.telegram.org/bot${BOT_TOKEN}/sendMessage;
+              const tgData = JSON.stringify({
+                chat_id: userId,
+                text: ✅ Payment Successful!\n₹${amount} has been added to your balance.
               });
+              const tgOptions = {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Content-Length': Buffer.byteLength(tgData)
+                }
+              };
+              await makeRequest(tgUrl, tgOptions, tgData);
             }
           }
         }
@@ -60,4 +79,4 @@ export default async function handler(req, res) {
   }
 
   return res.status(405).json({ error: "Method not allowed" });
-}
+};
